@@ -69,15 +69,17 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
+          flavor: |
+            latest=false
           images: |
             ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}
             ${{ env.GITHUB_REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=branch
-            type=ref,event=pr
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=develop,enable=${{ github.ref == 'refs/heads/develop' }}
+            type=raw,value=preview,enable=${{ github.ref == 'refs/heads/preview' }}
             type=raw,value=latest,enable={{is_default_branch}}
+            type=pep440,pattern={{raw}}
 
       - name: Build and push image
         id: push
