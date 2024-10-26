@@ -7,14 +7,23 @@ on:
     tags: ["v*"]
     branches: [ master, main, develop ]
   workflow_dispatch:
+  pull_request:
+    branches:
+      - 'main'
 
-permissions:
-  contents: read
-  packages: write
-  id-token: write # needed for signing the images with GitHub OIDC Token
+env:
+  IMAGE_NAME: ${{ github.repository }}
+  DOCKER_REGISTRY: docker.io
+  GITHUB_REGISTRY: ghcr.io
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
     steps:
       - name: Set up QEMU
         id: qemu
@@ -30,6 +39,7 @@ jobs:
         run: docker buildx inspect
 
       - name: Install Cosign
+        if: ${{ github.event_name != 'pull_request' }}
         uses: sigstore/cosign-installer@v3.7.0
 
       - name: Checkout repository
@@ -40,7 +50,8 @@ jobs:
         # https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#jobsjob_idstepsshell
         shell: bash
         run: |
-          echo "SYNAPSE_VERSION=$(grep "^version" pyproject.toml | sed -E 's/version\s*=\s*["]([^"]*)["]/\1/')" >> $GITHUB_ENV
+          echo "SYNAPSE_VERSION=$(grep '^version' pyproject.toml | sed -E 's/version\s*=\s*["]([^"]*)["]/\1/')" >> $GITHUB_ENV
+          echo "SYNAPSE_VERSION=${SYNAPSE_VERSION}" # Ensure the variable is set
 
       - name: Log in to DockerHub
         uses: docker/login-action@v3
@@ -51,49 +62,56 @@ jobs:
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.GITHUB_REGISTRY }}
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Calculate docker image tag
-        id: set-tag
-        uses: docker/metadata-action@master
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
         with:
-          images: |
-            docker.io/matrixdotorg/synapse
-            ghcr.io/element-hq/synapse
           flavor: |
             latest=false
+          images: |
+            ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}
+            ${{ env.GITHUB_REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
+            type=semver,pattern={{version}}
             type=raw,value=develop,enable=${{ github.ref == 'refs/heads/develop' }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=preview,enable=${{ github.ref == 'refs/heads/preview' }}
+            type=raw,value=latest,enable={{is_default_branch}}
             type=pep440,pattern={{raw}}
 
-      - name: Build and push all platforms
-        id: build-and-push
+      - name: Build and push image
+        id: push
         uses: docker/build-push-action@v6
         with:
-          push: true
+          file: docker/Dockerfile
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
           labels: |
             gitsha1=${{ github.sha }}
             org.opencontainers.image.version=${{ env.SYNAPSE_VERSION }}
-          tags: "${{ steps.set-tag.outputs.tags }}"
-          file: "docker/Dockerfile"
-          platforms: linux/amd64,linux/arm64
-
-          # arm64 builds OOM without the git fetch setting. c.f.
-          # https://github.com/rust-lang/cargo/issues/10583
           build-args: |
             CARGO_NET_GIT_FETCH_WITH_CLI=true
 
       - name: Sign the images with GitHub OIDC Token
+        if: ${{ github.event_name != 'pull_request' }}
         env:
-          DIGEST: ${{ steps.build-and-push.outputs.digest }}
-          TAGS: ${{ steps.set-tag.outputs.tags }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           images=""
           for tag in ${TAGS}; do
             images+="${tag}@${DIGEST} "
           done
           cosign sign --yes ${images}
+
+      - name: Attest
+        uses: actions/attest-build-provenance@v1
+        if: ${{ github.ref == 'refs/heads/main' }}
+        with:
+          subject-name: ${{ env.GITHUB_REGISTRY }}/${{ env.IMAGE_NAME}}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
