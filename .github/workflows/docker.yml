@@ -5,7 +5,7 @@ name: Build docker images
 on:
   push:
     tags: ["v*"]
-    branches: [ master, main, develop, preview ]
+    branches: [ master, main, develop ]
   workflow_dispatch:
   pull_request:
     branches:
@@ -79,17 +79,18 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push all platforms
-        id: build-and-push
+      - name: Build and push image
+        id: push
         uses: docker/build-push-action@v6
         with:
-          push: true
-          labels: |
-            gitsha1=${{ github.sha }}
-            org.opencontainers.image.version=${{ env.SYNAPSE_VERSION }}
-          tags: "${{ steps.meta.outputs.tags }}"
           file: "docker/Dockerfile"
           platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            gitsha1=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.SYNAPSE_VERSION }}
 
           # arm64 builds OOM without the git fetch setting. c.f.
           # https://github.com/rust-lang/cargo/issues/10583
@@ -98,7 +99,7 @@ jobs:
 
       - name: Sign the images with GitHub OIDC Token
         env:
-          DIGEST: ${{ steps.build-and-push.outputs.digest }}
+          DIGEST: ${{ steps.push.outputs.digest }}
           TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           images=""
@@ -106,3 +107,11 @@ jobs:
             images+="${tag}@${DIGEST} "
           done
           cosign sign --yes ${images}
+
+      - name: Attest
+        uses: actions/attest-build-provenance@v1
+        if: ${{ github.ref == 'refs/heads/main' }}
+        with:
+          subject-name: ${{ env.GITHUB_REGISTRY }}/${{ env.IMAGE_NAME}}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
