@@ -39,6 +39,7 @@ jobs:
         run: docker buildx inspect
 
       - name: Install Cosign
+        if: ${{ github.event_name != 'pull_request' }}
         uses: sigstore/cosign-installer@v3.7.0
 
       - name: Checkout repository
@@ -85,15 +86,18 @@ jobs:
         id: push
         uses: docker/build-push-action@v6
         with:
-          file: "docker/Dockerfile"
-          platforms: linux/amd64,linux/arm64
+          file: docker/Dockerfile
+          platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          labels: |
+            gitsha1=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.SYNAPSE_VERSION }}
           build-args: |
             CARGO_NET_GIT_FETCH_WITH_CLI=true
 
       - name: Sign the images with GitHub OIDC Token
+        if: ${{ github.event_name != 'pull_request' }}
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
           TAGS: ${{ steps.meta.outputs.tags }}
