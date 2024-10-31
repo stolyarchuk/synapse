@@ -6,9 +6,9 @@ on:
       # For bleeding-edge documentation
       - develop
       # For documentation specific to a release
-      - 'release-v*'
+      - preview
       # stable docs
-      - master
+      - main
 
   workflow_dispatch:
 
